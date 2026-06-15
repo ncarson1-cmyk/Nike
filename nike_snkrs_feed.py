@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -16,9 +17,18 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
+
+BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_ENDPOINT = "https://api.nike.com/product_feed/rollup_threads/v2"
 DEFAULT_SNKRS_CHANNEL_ID = "008be467-6c78-4079-94f0-70e2d6cc4003"
+DEFAULT_DATABASE_PATH = BASE_DIR / "nike_snkrs_assets.sqlite3"
+DEFAULT_IMAGE_DIR = BASE_DIR / "static" / "images"
+TEMPLATES_DIR = BASE_DIR / "templates"
 IMAGE_EXTENSIONS = (".avif", ".gif", ".jpeg", ".jpg", ".png", ".webp")
 COMMON_REQUEST_HEADERS = {
     "Origin": "https://www.nike.com",
@@ -38,6 +48,19 @@ IMAGE_REQUEST_HEADERS = {
     **COMMON_REQUEST_HEADERS,
     "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
 }
+
+
+DATABASE_PATH = Path(os.environ.get("SNKRS_DATABASE", DEFAULT_DATABASE_PATH))
+IMAGE_DIR = Path(os.environ.get("SNKRS_IMAGE_DIR", DEFAULT_IMAGE_DIR))
+IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+
+app = FastAPI(title="Nike SNKRS Asset Gallery")
+app.mount(
+    "/static/images",
+    StaticFiles(directory=str(IMAGE_DIR)),
+    name="static_images",
+)
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
 def parse_args() -> argparse.Namespace:
@@ -102,12 +125,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--database",
-        default="nike_snkrs_assets.sqlite3",
+        default=str(DEFAULT_DATABASE_PATH),
         help="SQLite database path. Defaults to nike_snkrs_assets.sqlite3.",
     )
     parser.add_argument(
         "--image-dir",
-        default="static/images",
+        default=str(DEFAULT_IMAGE_DIR),
         help="Directory for downloaded product images. Defaults to static/images.",
     )
     return parser.parse_args()
@@ -332,6 +355,51 @@ def insert_asset(
         (style_code, product_name, image_path.as_posix()),
     )
     connection.commit()
+
+
+def get_gallery_assets(
+    connection: sqlite3.Connection,
+    request: Request,
+) -> list[dict[str, str]]:
+    rows = connection.execute(
+        """
+        SELECT style_code, product_name, image_path, created_at
+        FROM assets
+        ORDER BY datetime(created_at) DESC, created_at DESC
+        """
+    ).fetchall()
+
+    assets: list[dict[str, str]] = []
+    for style_code, product_name, image_path, created_at in rows:
+        image_filename = Path(image_path).name
+        assets.append(
+            {
+                "style_code": style_code,
+                "product_name": product_name,
+                "image_path": image_path,
+                "image_url": str(
+                    request.url_for("static_images", path=image_filename)
+                ),
+                "created_at": created_at,
+            }
+        )
+    return assets
+
+
+@app.get("/", response_class=HTMLResponse)
+def index(request: Request) -> HTMLResponse:
+    DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(DATABASE_PATH) as connection:
+        create_asset_table(connection)
+        assets = get_gallery_assets(connection, request)
+
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+            "assets": assets,
+        },
+    )
 
 
 def safe_filename(value: str) -> str:

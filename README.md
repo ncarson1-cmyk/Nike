@@ -2,6 +2,12 @@
 
 ## SNKRS product feed script
 
+Install the Python dependencies:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
 Run the standalone Python script to fetch Nike SNKRS product threads and save
 new product assets locally:
 
@@ -33,3 +39,25 @@ NEW ASSET SAVED: [Product Name]
 ```
 
 Use `--database` or `--image-dir` to change where runtime assets are stored.
+
+## FastAPI gallery
+
+Start the web application with Uvicorn:
+
+```bash
+uvicorn nike_snkrs_feed:app --reload
+```
+
+Open `http://127.0.0.1:8000` to view a Jinja2-rendered gallery of downloaded
+sneaker images. The homepage queries SQLite and displays all saved records in a
+responsive CSS masonry grid, sorted by the most recently added assets first.
+Images are served from `/static/images`.
+
+By default, the app reads from `nike_snkrs_assets.sqlite3` and serves files from
+`static/images`. Override these locations with environment variables:
+
+```bash
+SNKRS_DATABASE=/path/to/assets.sqlite3 \
+SNKRS_IMAGE_DIR=/path/to/images \
+uvicorn nike_snkrs_feed:app
+```

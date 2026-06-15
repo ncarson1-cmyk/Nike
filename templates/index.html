@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Nike SNKRS Asset Gallery</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b0d10;
+        --panel: rgba(255, 255, 255, 0.08);
+        --panel-strong: rgba(255, 255, 255, 0.16);
+        --text: #f7f7f5;
+        --muted: #a8adb7;
+        --accent: #e6ff00;
+        --shadow: 0 24px 80px rgba(0, 0, 0, 0.38);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-height: 100vh;
+        margin: 0;
+        color: var(--text);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+        background:
+          radial-gradient(circle at 10% 0%, rgba(230, 255, 0, 0.14), transparent 30rem),
+          radial-gradient(circle at 90% 10%, rgba(83, 111, 255, 0.2), transparent 34rem),
+          linear-gradient(135deg, #08090c 0%, var(--bg) 45%, #11151b 100%);
+      }
+
+      .page {
+        width: min(1440px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 56px 0 72px;
+      }
+
+      .hero {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: end;
+        justify-content: space-between;
+        gap: 24px;
+        margin-bottom: 36px;
+      }
+
+      .eyebrow {
+        margin: 0 0 10px;
+        color: var(--accent);
+        font-size: 0.78rem;
+        font-weight: 800;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        max-width: 780px;
+        margin: 0;
+        font-size: clamp(2.5rem, 8vw, 6.75rem);
+        line-height: 0.88;
+        letter-spacing: -0.07em;
+      }
+
+      .summary {
+        max-width: 360px;
+        margin: 0;
+        color: var(--muted);
+        font-size: 1rem;
+        line-height: 1.7;
+      }
+
+      .count {
+        color: var(--text);
+        font-weight: 800;
+      }
+
+      .masonry {
+        column-count: 4;
+        column-gap: 22px;
+      }
+
+      .card {
+        position: relative;
+        display: inline-block;
+        width: 100%;
+        margin: 0 0 22px;
+        overflow: hidden;
+        break-inside: avoid;
+        border: 1px solid var(--panel-strong);
+        border-radius: 28px;
+        background: var(--panel);
+        box-shadow: var(--shadow);
+        transform: translateZ(0);
+      }
+
+      .card img {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+
+      .card::after {
+        position: absolute;
+        inset: auto 0 0;
+        height: 52%;
+        content: "";
+        background: linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.82));
+        opacity: 0.96;
+      }
+
+      .meta {
+        position: absolute;
+        right: 0;
+        bottom: 0;
+        left: 0;
+        z-index: 1;
+        padding: 54px 22px 22px;
+      }
+
+      .meta h2 {
+        margin: 0 0 10px;
+        font-size: clamp(1.15rem, 2vw, 1.6rem);
+        line-height: 1.05;
+        letter-spacing: -0.04em;
+      }
+
+      .style-code {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 11px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: 999px;
+        color: var(--accent);
+        background: rgba(0, 0, 0, 0.48);
+        font-size: 0.76rem;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+      }
+
+      .empty {
+        padding: 56px;
+        border: 1px solid var(--panel-strong);
+        border-radius: 32px;
+        color: var(--muted);
+        background: var(--panel);
+        text-align: center;
+      }
+
+      @media (max-width: 1180px) {
+        .masonry {
+          column-count: 3;
+        }
+      }
+
+      @media (max-width: 820px) {
+        .page {
+          width: min(100% - 24px, 720px);
+          padding-top: 36px;
+        }
+
+        .masonry {
+          column-count: 2;
+          column-gap: 16px;
+        }
+
+        .card {
+          margin-bottom: 16px;
+          border-radius: 22px;
+        }
+      }
+
+      @media (max-width: 560px) {
+        .masonry {
+          column-count: 1;
+        }
+
+        .summary {
+          max-width: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">SNKRS SQLite Gallery</p>
+          <h1>Downloaded sneaker assets</h1>
+        </div>
+        <p class="summary">
+          Showing <span class="count">{{ assets|length }}</span> saved sneaker
+          image{{ '' if assets|length == 1 else 's' }}, sorted by newest first.
+        </p>
+      </header>
+
+      {% if assets %}
+        <section class="masonry" aria-label="Downloaded sneaker images">
+          {% for asset in assets %}
+            <article class="card">
+              <img src="{{ asset.image_url }}" alt="{{ asset.product_name }}">
+              <div class="meta">
+                <h2>{{ asset.product_name }}</h2>
+                <span class="style-code">{{ asset.style_code }}</span>
+              </div>
+            </article>
+          {% endfor %}
+        </section>
+      {% else %}
+        <section class="empty">
+          <h2>No sneaker assets yet.</h2>
+          <p>Run the feed importer to download images and populate the gallery.</p>
+        </section>
+      {% endif %}
+    </main>
+  </body>
+</html>

@@ -17,9 +17,8 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 
@@ -55,11 +54,6 @@ IMAGE_DIR = Path(os.environ.get("SNKRS_IMAGE_DIR", DEFAULT_IMAGE_DIR))
 IMAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="Nike SNKRS Asset Gallery")
-app.mount(
-    "/static/images",
-    StaticFiles(directory=str(IMAGE_DIR)),
-    name="static_images",
-)
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
@@ -378,12 +372,20 @@ def get_gallery_assets(
                 "product_name": product_name,
                 "image_path": image_path,
                 "image_url": str(
-                    request.url_for("static_images", path=image_filename)
+                    request.url_for("serve_image", image_name=image_filename)
                 ),
                 "created_at": created_at,
             }
         )
     return assets
+
+
+@app.get("/static/images/{image_name}", name="serve_image")
+def serve_image(image_name: str) -> FileResponse:
+    image_path = IMAGE_DIR / Path(image_name).name
+    if not image_path.is_file():
+        raise HTTPException(status_code=404, detail="Image not found")
+    return FileResponse(image_path)
 
 
 @app.get("/", response_class=HTMLResponse)

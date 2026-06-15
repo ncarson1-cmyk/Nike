@@ -396,11 +396,9 @@ def index(request: Request) -> HTMLResponse:
         assets = get_gallery_assets(connection, request)
 
     return templates.TemplateResponse(
-        "index.html",
-        {
-            "request": request,
-            "assets": assets,
-        },
+        request=request,
+        name="index.html",
+        context={"assets": assets},
     )
 
 

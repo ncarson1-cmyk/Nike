@@ -45,7 +45,7 @@ Use `--database` or `--image-dir` to change where runtime assets are stored.
 Start the web application with Uvicorn:
 
 ```bash
-uvicorn nike_snkrs_feed:app --reload
+python3 -m uvicorn nike_snkrs_feed:app --reload
 ```
 
 Open `http://127.0.0.1:8000` to view a Jinja2-rendered gallery of downloaded
@@ -59,5 +59,5 @@ By default, the app reads from `nike_snkrs_assets.sqlite3` and serves files from
 ```bash
 SNKRS_DATABASE=/path/to/assets.sqlite3 \
 SNKRS_IMAGE_DIR=/path/to/images \
-uvicorn nike_snkrs_feed:app
+python3 -m uvicorn nike_snkrs_feed:app
 ```

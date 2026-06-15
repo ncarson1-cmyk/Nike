@@ -180,29 +180,40 @@ def get_nested(mapping: dict[str, Any], path: tuple[str, ...]) -> Any:
     return current
 
 
-def extract_titles(thread: dict[str, Any]) -> list[str]:
+def first_string(values: Iterable[Any], default: str = "N/A") -> str:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return default
+
+
+def extract_title(thread: dict[str, Any]) -> str:
     product_info = thread.get("productInfo")
     infos = product_info if isinstance(product_info, list) else []
 
-    titles: list[Any] = []
+    candidates: list[Any] = []
     for info in infos:
         if not isinstance(info, dict):
             continue
-        titles.extend(
+        candidates.extend(
             [
                 get_nested(info, ("productContent", "fullTitle")),
                 get_nested(info, ("productContent", "title")),
-                get_nested(info, ("merchProduct", "labelName")),
             ]
         )
 
-    titles.extend(
+    candidates.extend(
         [
             get_nested(thread, ("publishedContent", "properties", "title")),
             get_nested(thread, ("publishedContent", "properties", "subtitle")),
         ]
     )
-    return unique_strings(titles)
+    candidates.extend(
+        get_nested(info, ("merchProduct", "labelName"))
+        for info in infos
+        if isinstance(info, dict)
+    )
+    return first_string(candidates)
 
 
 def extract_style_colors(thread: dict[str, Any]) -> list[str]:
@@ -263,12 +274,12 @@ def extract_node_image_urls(thread: dict[str, Any]) -> list[str]:
 
 
 def print_thread(index: int, thread: dict[str, Any]) -> None:
-    titles = extract_titles(thread)
+    title = extract_title(thread)
     style_colors = extract_style_colors(thread)
     image_urls = extract_node_image_urls(thread)
 
     print(f"Product thread #{index}")
-    print(f"Product title: {', '.join(titles) if titles else 'N/A'}")
+    print(f"Product title: {title}")
     print(f"Style-color code: {', '.join(style_colors) if style_colors else 'N/A'}")
     print("Image URLs:")
     if image_urls:

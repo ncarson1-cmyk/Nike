@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import gzip
 import json
 import os
@@ -13,11 +14,13 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Iterable, Iterator
+from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 
@@ -29,6 +32,9 @@ DEFAULT_DATABASE_PATH = BASE_DIR / "nike_snkrs_assets.sqlite3"
 DEFAULT_IMAGE_DIR = BASE_DIR / "static" / "images"
 TEMPLATES_DIR = BASE_DIR / "templates"
 IMAGE_EXTENSIONS = (".avif", ".gif", ".jpeg", ".jpg", ".png", ".webp")
+DEFAULT_SCRAPE_INTERVAL_SECONDS = 300
+DEFAULT_SCRAPE_COUNT = 24
+DEFAULT_SCRAPE_TIMEOUT = 20.0
 COMMON_REQUEST_HEADERS = {
     "Origin": "https://www.nike.com",
     "Referer": "https://www.nike.com/launch",
@@ -51,10 +57,76 @@ IMAGE_REQUEST_HEADERS = {
 
 DATABASE_PATH = Path(os.environ.get("SNKRS_DATABASE", DEFAULT_DATABASE_PATH))
 IMAGE_DIR = Path(os.environ.get("SNKRS_IMAGE_DIR", DEFAULT_IMAGE_DIR))
+SCRAPE_INTERVAL_SECONDS = int(
+    os.environ.get("SNKRS_SCRAPE_INTERVAL_SECONDS", DEFAULT_SCRAPE_INTERVAL_SECONDS)
+)
+SCRAPE_COUNT = int(os.environ.get("SNKRS_SCRAPE_COUNT", DEFAULT_SCRAPE_COUNT))
+SCRAPE_TIMEOUT = float(os.environ.get("SNKRS_SCRAPE_TIMEOUT", DEFAULT_SCRAPE_TIMEOUT))
+SCRAPE_MARKETPLACE = os.environ.get("SNKRS_MARKETPLACE", "US")
+SCRAPE_LANGUAGE = os.environ.get("SNKRS_LANGUAGE", "en")
+SCRAPE_CHANNEL_ID = os.environ.get("SNKRS_CHANNEL_ID", DEFAULT_SNKRS_CHANNEL_ID)
+SCRAPE_ENDPOINT = os.environ.get("SNKRS_ENDPOINT", DEFAULT_ENDPOINT)
+SCRAPE_EXTRA_FILTERS = [
+    value.strip()
+    for value in os.environ.get("SNKRS_EXTRA_FILTERS", "").split(",")
+    if value.strip()
+]
 IMAGE_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="Nike SNKRS Asset Gallery")
+scheduler = AsyncIOScheduler()
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+
+class WebSocketManager:
+    def __init__(self) -> None:
+        self.active_connections: set[WebSocket] = set()
+
+    async def connect(self, websocket: WebSocket) -> None:
+        await websocket.accept()
+        self.active_connections.add(websocket)
+
+    def disconnect(self, websocket: WebSocket) -> None:
+        self.active_connections.discard(websocket)
+
+    async def broadcast(self, message: dict[str, Any]) -> None:
+        stale_connections: list[WebSocket] = []
+        for websocket in self.active_connections:
+            try:
+                await websocket.send_json(message)
+            except RuntimeError:
+                stale_connections.append(websocket)
+
+        for websocket in stale_connections:
+            self.disconnect(websocket)
+
+
+websocket_manager = WebSocketManager()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(DATABASE_PATH) as connection:
+        create_asset_table(connection)
+
+    scheduler.add_job(
+        poll_nike_feed,
+        "interval",
+        seconds=SCRAPE_INTERVAL_SECONDS,
+        id="nike-snkrs-feed-poll",
+        max_instances=1,
+        coalesce=True,
+        replace_existing=True,
+    )
+    scheduler.start()
+    try:
+        yield
+    finally:
+        scheduler.shutdown(wait=False)
+
+
+app = FastAPI(title="Nike SNKRS Asset Gallery", lifespan=lifespan)
 
 
 def parse_args() -> argparse.Namespace:
@@ -340,7 +412,7 @@ def insert_asset(
     style_code: str,
     product_name: str,
     image_path: Path,
-) -> None:
+) -> str:
     connection.execute(
         """
         INSERT INTO assets (style_code, product_name, image_path)
@@ -348,7 +420,32 @@ def insert_asset(
         """,
         (style_code, product_name, image_path.as_posix()),
     )
+    cursor = connection.execute(
+        "SELECT created_at FROM assets WHERE style_code = ?",
+        (style_code,),
+    )
+    created_at = cursor.fetchone()[0]
     connection.commit()
+    return created_at
+
+
+def image_url_for_path(image_path: Path) -> str:
+    return f"/static/images/{urllib.parse.quote(image_path.name)}"
+
+
+def asset_payload(
+    style_code: str,
+    product_name: str,
+    image_path: Path,
+    created_at: str,
+) -> dict[str, str]:
+    return {
+        "style_code": style_code,
+        "product_name": product_name,
+        "image_path": image_path.as_posix(),
+        "image_url": image_url_for_path(image_path),
+        "created_at": created_at,
+    }
 
 
 def get_gallery_assets(
@@ -440,7 +537,8 @@ def save_new_assets(
     connection: sqlite3.Connection,
     image_dir: Path,
     timeout: float,
-) -> None:
+) -> list[dict[str, str]]:
+    new_assets: list[dict[str, str]] = []
     for thread in product_threads:
         product_name = extract_title(thread)
         style_codes = extract_style_colors(thread)
@@ -465,38 +563,76 @@ def save_new_assets(
                 continue
 
             image_path = download_image(image_urls[0], style_code, image_dir, timeout)
-            insert_asset(connection, style_code, product_name, image_path)
+            created_at = insert_asset(connection, style_code, product_name, image_path)
+            new_assets.append(
+                asset_payload(style_code, product_name, image_path, created_at)
+            )
             print(f"NEW ASSET SAVED: {product_name}")
 
+    return new_assets
 
-def main() -> int:
-    args = parse_args()
+
+def scheduled_scrape_args() -> argparse.Namespace:
+    return argparse.Namespace(
+        endpoint=SCRAPE_ENDPOINT,
+        marketplace=SCRAPE_MARKETPLACE,
+        language=SCRAPE_LANGUAGE,
+        channel_id=SCRAPE_CHANNEL_ID,
+        count=SCRAPE_COUNT,
+        anchor=0,
+        extra_filters=SCRAPE_EXTRA_FILTERS,
+        timeout=SCRAPE_TIMEOUT,
+        database=str(DATABASE_PATH),
+        image_dir=str(IMAGE_DIR),
+    )
+
+
+def scrape_and_save(args: argparse.Namespace) -> list[dict[str, str]]:
     url = build_request_url(args)
-
-    try:
-        payload = fetch_json(url, args.timeout)
-    except RuntimeError as exc:
-        print(exc, file=sys.stderr)
-        return 1
-
+    payload = fetch_json(url, args.timeout)
     product_threads = get_product_threads(payload)
     if not product_threads:
-        print("No product threads found in the Nike API response.", file=sys.stderr)
-        return 1
+        return []
 
     database_path = Path(args.database)
     if database_path.parent != Path("."):
         database_path.parent.mkdir(parents=True, exist_ok=True)
 
+    with sqlite3.connect(database_path) as connection:
+        create_asset_table(connection)
+        return save_new_assets(
+            product_threads,
+            connection,
+            Path(args.image_dir),
+            args.timeout,
+        )
+
+
+async def poll_nike_feed() -> None:
     try:
-        with sqlite3.connect(database_path) as connection:
-            create_asset_table(connection)
-            save_new_assets(
-                product_threads,
-                connection,
-                Path(args.image_dir),
-                args.timeout,
-            )
+        new_assets = await asyncio.to_thread(scrape_and_save, scheduled_scrape_args())
+    except (RuntimeError, sqlite3.Error) as exc:
+        print(f"Scheduled Nike scrape failed: {exc}", file=sys.stderr)
+        return
+
+    for asset in new_assets:
+        await websocket_manager.broadcast({"event": "new_asset", "asset": asset})
+
+
+@app.websocket("/ws/assets")
+async def asset_updates(websocket: WebSocket) -> None:
+    await websocket_manager.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        websocket_manager.disconnect(websocket)
+
+
+def main() -> int:
+    args = parse_args()
+    try:
+        scrape_and_save(args)
     except (RuntimeError, sqlite3.Error) as exc:
         print(exc, file=sys.stderr)
         return 1

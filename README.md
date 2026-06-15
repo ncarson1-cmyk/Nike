@@ -53,6 +53,11 @@ sneaker images. The homepage queries SQLite and displays all saved records in a
 responsive CSS masonry grid, sorted by the most recently added assets first.
 Images are served from `/static/images`.
 
+When the FastAPI app starts, APScheduler begins polling the Nike API every
+5 minutes. If a poll saves a new sneaker asset, the app broadcasts a WebSocket
+event to connected browsers and the homepage injects the new image at the top of
+the grid without a page reload.
+
 By default, the app reads from `nike_snkrs_assets.sqlite3` and serves files from
 `static/images`. Override these locations with environment variables:
 
@@ -61,3 +66,14 @@ SNKRS_DATABASE=/path/to/assets.sqlite3 \
 SNKRS_IMAGE_DIR=/path/to/images \
 python3 -m uvicorn nike_snkrs_feed:app
 ```
+
+Scheduler settings can also be customized with environment variables:
+
+- `SNKRS_SCRAPE_INTERVAL_SECONDS` - defaults to `300`
+- `SNKRS_SCRAPE_COUNT` - defaults to `24`
+- `SNKRS_SCRAPE_TIMEOUT` - defaults to `20`
+- `SNKRS_MARKETPLACE` - defaults to `US`
+- `SNKRS_LANGUAGE` - defaults to `en`
+- `SNKRS_CHANNEL_ID` - defaults to the SNKRS app channel
+- `SNKRS_ENDPOINT` - defaults to the rollup product feed endpoint
+- `SNKRS_EXTRA_FILTERS` - optional comma-separated Nike API filters

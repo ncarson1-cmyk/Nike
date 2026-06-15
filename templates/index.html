@@ -97,6 +97,10 @@
         transform: translateZ(0);
       }
 
+      .card.is-new {
+        animation: pop-in 460ms ease-out;
+      }
+
       .card img {
         display: block;
         width: 100%;
@@ -151,6 +155,46 @@
         text-align: center;
       }
 
+      .empty[hidden] {
+        display: none;
+      }
+
+      .live-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 14px;
+        color: var(--muted);
+        font-size: 0.82rem;
+        font-weight: 700;
+      }
+
+      .live-status::before {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        content: "";
+        background: #717784;
+        box-shadow: 0 0 0 0 rgba(230, 255, 0, 0);
+      }
+
+      .live-status.is-live::before {
+        background: var(--accent);
+        box-shadow: 0 0 24px rgba(230, 255, 0, 0.65);
+      }
+
+      @keyframes pop-in {
+        from {
+          opacity: 0;
+          transform: translateY(-18px) scale(0.98);
+        }
+
+        to {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+        }
+      }
+
       @media (max-width: 1180px) {
         .masonry {
           column-count: 3;
@@ -193,29 +237,107 @@
           <h1>Downloaded sneaker assets</h1>
         </div>
         <p class="summary">
-          Showing <span class="count">{{ assets|length }}</span> saved sneaker
-          image{{ '' if assets|length == 1 else 's' }}, sorted by newest first.
+          Showing <span class="count" id="asset-count">{{ assets|length }}</span>
+          saved sneaker <span id="asset-plural">{{ 'image' if assets|length == 1 else 'images' }}</span>,
+          sorted by newest first.
+          <span class="live-status" id="live-status">Connecting live updates</span>
         </p>
       </header>
 
-      {% if assets %}
-        <section class="masonry" aria-label="Downloaded sneaker images">
-          {% for asset in assets %}
-            <article class="card">
-              <img src="{{ asset.image_url }}" alt="{{ asset.product_name }}">
-              <div class="meta">
-                <h2>{{ asset.product_name }}</h2>
-                <span class="style-code">{{ asset.style_code }}</span>
-              </div>
-            </article>
-          {% endfor %}
-        </section>
-      {% else %}
-        <section class="empty">
-          <h2>No sneaker assets yet.</h2>
-          <p>Run the feed importer to download images and populate the gallery.</p>
-        </section>
-      {% endif %}
+      <section class="masonry" id="asset-grid" aria-label="Downloaded sneaker images">
+        {% for asset in assets %}
+          <article class="card" data-style-code="{{ asset.style_code }}">
+            <img src="{{ asset.image_url }}" alt="{{ asset.product_name }}">
+            <div class="meta">
+              <h2>{{ asset.product_name }}</h2>
+              <span class="style-code">{{ asset.style_code }}</span>
+            </div>
+          </article>
+        {% endfor %}
+      </section>
+
+      <section class="empty" id="empty-state" {% if assets %}hidden{% endif %}>
+        <h2>No sneaker assets yet.</h2>
+        <p>New downloads from the scheduled Nike scraper will appear here live.</p>
+      </section>
     </main>
+
+    <script>
+      const grid = document.querySelector("#asset-grid");
+      const count = document.querySelector("#asset-count");
+      const plural = document.querySelector("#asset-plural");
+      const emptyState = document.querySelector("#empty-state");
+      const liveStatus = document.querySelector("#live-status");
+
+      function updateCount() {
+        const nextCount = grid.querySelectorAll(".card").length;
+        count.textContent = nextCount;
+        plural.textContent = nextCount === 1 ? "image" : "images";
+        emptyState.hidden = nextCount > 0;
+      }
+
+      function buildCard(asset) {
+        const card = document.createElement("article");
+        card.className = "card is-new";
+        card.dataset.styleCode = asset.style_code;
+
+        const image = document.createElement("img");
+        image.src = asset.image_url;
+        image.alt = asset.product_name;
+
+        const meta = document.createElement("div");
+        meta.className = "meta";
+
+        const title = document.createElement("h2");
+        title.textContent = asset.product_name;
+
+        const styleCode = document.createElement("span");
+        styleCode.className = "style-code";
+        styleCode.textContent = asset.style_code;
+
+        meta.append(title, styleCode);
+        card.append(image, meta);
+        return card;
+      }
+
+      function prependAsset(asset) {
+        if (!asset || !asset.style_code || !asset.image_url) {
+          return;
+        }
+
+        const existing = grid.querySelector(`[data-style-code="${CSS.escape(asset.style_code)}"]`);
+        if (existing) {
+          existing.remove();
+        }
+
+        grid.prepend(buildCard(asset));
+        updateCount();
+      }
+
+      function connectSocket() {
+        const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+        const socket = new WebSocket(`${protocol}://${window.location.host}/ws/assets`);
+
+        socket.addEventListener("open", () => {
+          liveStatus.textContent = "Live updates connected";
+          liveStatus.classList.add("is-live");
+        });
+
+        socket.addEventListener("message", (event) => {
+          const payload = JSON.parse(event.data);
+          if (payload.event === "new_asset") {
+            prependAsset(payload.asset);
+          }
+        });
+
+        socket.addEventListener("close", () => {
+          liveStatus.textContent = "Reconnecting live updates";
+          liveStatus.classList.remove("is-live");
+          window.setTimeout(connectSocket, 3000);
+        });
+      }
+
+      connectSocket();
+    </script>
   </body>
 </html>

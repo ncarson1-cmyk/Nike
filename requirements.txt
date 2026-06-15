@@ -1,3 +1,5 @@
+apscheduler
 fastapi
 jinja2
 uvicorn
+websockets

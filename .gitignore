@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+
+nike_snkrs_assets.sqlite3
+nike_snkrs_assets.sqlite3-*
+static/images/

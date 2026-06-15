@@ -1,29 +1,52 @@
 #!/usr/bin/env python3
-"""Fetch Nike SNKRS product feed data and print selected product fields."""
+"""Fetch Nike SNKRS product feed data and save new product assets locally."""
 
 from __future__ import annotations
 
 import argparse
 import gzip
 import json
+import re
+import sqlite3
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Iterable, Iterator
+from pathlib import Path
 from typing import Any
 
 
 DEFAULT_ENDPOINT = "https://api.nike.com/product_feed/rollup_threads/v2"
 DEFAULT_SNKRS_CHANNEL_ID = "008be467-6c78-4079-94f0-70e2d6cc4003"
 IMAGE_EXTENSIONS = (".avif", ".gif", ".jpeg", ".jpg", ".png", ".webp")
+COMMON_REQUEST_HEADERS = {
+    "Origin": "https://www.nike.com",
+    "Referer": "https://www.nike.com/launch",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/125.0 Safari/537.36"
+    ),
+}
+FEED_REQUEST_HEADERS = {
+    **COMMON_REQUEST_HEADERS,
+    "Accept": "application/json",
+    "Accept-Encoding": "gzip",
+}
+IMAGE_REQUEST_HEADERS = {
+    **COMMON_REQUEST_HEADERS,
+    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+}
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Fetch the Nike SNKRS product feed and print each thread's product "
-            "title, style-color code, and image URLs from publishedContent.nodes."
+            "title, style-color code, and image URLs from publishedContent.nodes. "
+            "New style codes are saved to SQLite with their first image downloaded "
+            "locally."
         )
     )
     parser.add_argument(
@@ -77,6 +100,16 @@ def parse_args() -> argparse.Namespace:
         default=20.0,
         help="Request timeout in seconds. Defaults to 20.",
     )
+    parser.add_argument(
+        "--database",
+        default="nike_snkrs_assets.sqlite3",
+        help="SQLite database path. Defaults to nike_snkrs_assets.sqlite3.",
+    )
+    parser.add_argument(
+        "--image-dir",
+        default="static/images",
+        help="Directory for downloaded product images. Defaults to static/images.",
+    )
     return parser.parse_args()
 
 
@@ -115,17 +148,7 @@ def read_response_body(response: Any) -> bytes:
 def fetch_json(url: str, timeout: float) -> dict[str, Any]:
     request = urllib.request.Request(
         url,
-        headers={
-            "Accept": "application/json",
-            "Accept-Encoding": "gzip",
-            "Origin": "https://www.nike.com",
-            "Referer": "https://www.nike.com/launch",
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/125.0 Safari/537.36"
-            ),
-        },
+        headers=FEED_REQUEST_HEADERS,
     )
 
     try:
@@ -273,21 +296,109 @@ def extract_node_image_urls(thread: dict[str, Any]) -> list[str]:
     return unique_strings(iter_image_urls(nodes))
 
 
-def print_thread(index: int, thread: dict[str, Any]) -> None:
-    title = extract_title(thread)
-    style_colors = extract_style_colors(thread)
-    image_urls = extract_node_image_urls(thread)
+def create_asset_table(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS assets (
+            style_code TEXT PRIMARY KEY,
+            product_name TEXT NOT NULL,
+            image_path TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    connection.commit()
 
-    print(f"Product thread #{index}")
-    print(f"Product title: {title}")
-    print(f"Style-color code: {', '.join(style_colors) if style_colors else 'N/A'}")
-    print("Image URLs:")
-    if image_urls:
-        for image_url in image_urls:
-            print(f"  - {image_url}")
-    else:
-        print("  - N/A")
-    print()
+
+def asset_exists(connection: sqlite3.Connection, style_code: str) -> bool:
+    cursor = connection.execute(
+        "SELECT 1 FROM assets WHERE style_code = ? LIMIT 1",
+        (style_code,),
+    )
+    return cursor.fetchone() is not None
+
+
+def insert_asset(
+    connection: sqlite3.Connection,
+    style_code: str,
+    product_name: str,
+    image_path: Path,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO assets (style_code, product_name, image_path)
+        VALUES (?, ?, ?)
+        """,
+        (style_code, product_name, image_path.as_posix()),
+    )
+    connection.commit()
+
+
+def safe_filename(value: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip())
+    return normalized.strip("-._") or "nike-snkrs-image"
+
+
+def image_extension(image_url: str) -> str:
+    path = urllib.parse.urlparse(image_url).path
+    suffix = Path(path).suffix.lower()
+    if suffix in IMAGE_EXTENSIONS:
+        return suffix
+    return ".jpg"
+
+
+def download_image(image_url: str, style_code: str, image_dir: Path, timeout: float) -> Path:
+    image_dir.mkdir(parents=True, exist_ok=True)
+    image_path = image_dir / f"{safe_filename(style_code)}{image_extension(image_url)}"
+
+    request = urllib.request.Request(image_url, headers=IMAGE_REQUEST_HEADERS)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            image_path.write_bytes(response.read())
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(
+            f"Image download for {style_code} returned HTTP {exc.code}: {image_url}"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(
+            f"Failed to download image for {style_code}: {exc.reason}"
+        ) from exc
+
+    return image_path
+
+
+def save_new_assets(
+    product_threads: Iterable[dict[str, Any]],
+    connection: sqlite3.Connection,
+    image_dir: Path,
+    timeout: float,
+) -> None:
+    for thread in product_threads:
+        product_name = extract_title(thread)
+        style_codes = extract_style_colors(thread)
+        image_urls = extract_node_image_urls(thread)
+
+        if not style_codes:
+            print(
+                f"Skipping {product_name}: no style-color code found.",
+                file=sys.stderr,
+            )
+            continue
+
+        if not image_urls:
+            print(
+                f"Skipping {product_name}: no image URL found in thread nodes.",
+                file=sys.stderr,
+            )
+            continue
+
+        for style_code in style_codes:
+            if asset_exists(connection, style_code):
+                continue
+
+            image_path = download_image(image_urls[0], style_code, image_dir, timeout)
+            insert_asset(connection, style_code, product_name, image_path)
+            print(f"NEW ASSET SAVED: {product_name}")
 
 
 def main() -> int:
@@ -305,8 +416,22 @@ def main() -> int:
         print("No product threads found in the Nike API response.", file=sys.stderr)
         return 1
 
-    for index, thread in enumerate(product_threads, start=1):
-        print_thread(index, thread)
+    database_path = Path(args.database)
+    if database_path.parent != Path("."):
+        database_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        with sqlite3.connect(database_path) as connection:
+            create_asset_table(connection)
+            save_new_assets(
+                product_threads,
+                connection,
+                Path(args.image_dir),
+                args.timeout,
+            )
+    except (RuntimeError, sqlite3.Error) as exc:
+        print(exc, file=sys.stderr)
+        return 1
 
     return 0
 
